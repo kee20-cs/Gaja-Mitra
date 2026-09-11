@@ -1,0 +1,68 @@
+diff --git a/echofield/pipeline/feature_extract.py b/echofield/pipeline/feature_extract.py
+index 516eae8..9163955 100644
+--- a/echofield/pipeline/feature_extract.py
++++ b/echofield/pipeline/feature_extract.py
+@@ -1191,6 +1191,27 @@ def _classify_call_type_rules(features: dict) -> dict:
+     below_100 = energy_dist.get("below_100hz", 0)
+     spectral_centroid = features.get("spectral_centroid_hz", 0)
+     snr = features.get("snr_db", 0)
++    energy_ratio_mid = features.get("energy_ratio_mid", 0)
++
++    # Roar: dominant mid-band energy concentration.
++    # Checked BEFORE the rumble branch below, because roars (in the labeled
++    # elephant-call dataset used to calibrate this rule) are also low-f0/
++    # high-harmonicity and were previously being swallowed entirely by the
++    # rumble check (0% roar recall). bandwidth/harmonicity alone do not
++    # separate roar from rumble in this dataset (heavy overlap on both), but
++    # energy_ratio_mid does: rumble p90 = 0.44, roar min = 0.55 across all
++    # labeled examples, so 0.55 sits right at the roar floor -- gives 100%
++    # roar recall on the calibration set with only a ~1.4pt rumble recall
++    # cost (84.4% -> 83.0%), net neutral on overall accuracy.
++    if energy_ratio_mid > 0.55:
++        confidence = 0.55
++        if energy_ratio_mid > 0.6:
++            confidence += 0.15
++        if energy_ratio_mid > 0.75:
++            confidence += 0.15
++        if snr > 15:
++            confidence += 0.05
++        return {"call_type": "roar", "confidence": round(min(confidence, 1.0), 3)}
+ 
+     # Rumble: very low fundamental, high harmonicity, long duration
+     # Elephant rumbles are typically 8-25 Hz with strong harmonic structure
+@@ -1204,8 +1225,15 @@ def _classify_call_type_rules(features: dict) -> dict:
+             confidence += 0.15
+         return {"call_type": "rumble", "confidence": round(min(confidence, 1.0), 3)}
+ 
+-    # Trumpet: high fundamental frequency, high energy, bright spectrum
+-    if f0 > 200 or (spectral_centroid > 1500 and snr > 15):
++    # Trumpet: high fundamental frequency, high energy, bright spectrum.
++    # NOTE: the previous fallback trigger "(spectral_centroid > 1500 and
++    # snr > 15)" was removed. On the labeled dataset it fired on 154/1102
++    # rumbles (0 true trumpets ever benefited from it) because rumble
++    # spectral centroid heavily overlaps that range (median 2190 Hz, up to
++    # 4110 Hz). f0 > 200 Hz is elephant-call-specific enough on its own to
++    # keep as the sole trigger until real trumpet examples are available to
++    # recalibrate a secondary condition.
++    if f0 > 200:
+         confidence = 0.5
+         if f0 > 300:
+             confidence += 0.15
+@@ -1217,17 +1245,6 @@ def _classify_call_type_rules(features: dict) -> dict:
+             confidence += 0.1
+         return {"call_type": "trumpet", "confidence": round(min(confidence, 1.0), 3)}
+ 
+-    # Roar: broad bandwidth, low harmonicity, loud
+-    if bandwidth > 3000 and harmonicity < 0.4:
+-        confidence = 0.5
+-        if snr > 15:
+-            confidence += 0.15
+-        if bandwidth > 5000:
+-            confidence += 0.15
+-        if duration > 1.0:
+-            confidence += 0.1
+-        return {"call_type": "roar", "confidence": round(min(confidence, 1.0), 3)}
+-
+     # Bark: short duration, mid frequency range
+     if duration < 1.0 and 25 <= f0 <= 200:
+         confidence = 0.4

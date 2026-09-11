@@ -1,0 +1,350 @@
+"""Spectrogram generation for EchoField."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Callable
+
+import librosa
+import librosa.display
+import matplotlib
+import matplotlib.ticker
+import numpy as np
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
+
+@dataclass
+class Spectrogram:
+    recording_id: str
+    stft: np.ndarray
+    magnitude_db: np.ndarray
+    mel_spectrogram: np.ndarray
+    frequencies_hz: np.ndarray
+    times_s: np.ndarray
+    npy_path: str
+
+
+@dataclass
+class SpectrogramViz:
+    recording_id: str
+    url: str
+    width: int
+    height: int
+    freq_max_hz: float
+
+
+def pre_emphasis(y: np.ndarray, coefficient: float = 0.97) -> np.ndarray:
+    if y.size == 0:
+        return y.astype(np.float32)
+    emphasized = np.empty_like(y, dtype=np.float32)
+    emphasized[0] = y[0]
+    emphasized[1:] = y[1:] - coefficient * y[:-1]
+    return emphasized
+
+
+def normalize_per_segment(spec: np.ndarray) -> np.ndarray:
+    mean = float(np.mean(spec))
+    std = float(np.std(spec))
+    if std < 1e-8:
+        return np.zeros_like(spec, dtype=np.float32)
+    return ((spec - mean) / std).astype(np.float32)
+
+
+def compute_stft(
+    y: np.ndarray,
+    sr: int,
+    n_fft: int = 2048,
+    hop_length: int = 512,
+    window: str = "hann",
+) -> dict[str, np.ndarray]:
+    emphasized = pre_emphasis(y)
+    stft = librosa.stft(emphasized, n_fft=n_fft, hop_length=hop_length, window=window)
+    magnitude = np.abs(stft)
+    magnitude_db = librosa.amplitude_to_db(magnitude, ref=np.max)
+    frequencies = librosa.fft_frequencies(sr=sr, n_fft=n_fft)
+    times = librosa.frames_to_time(np.arange(stft.shape[1]), sr=sr, hop_length=hop_length)
+    return {
+        "stft": stft,
+        "magnitude_db": magnitude_db.astype(np.float32),
+        "frequencies": frequencies.astype(np.float32),
+        "times": times.astype(np.float32),
+    }
+
+
+def compute_mel_spectrogram(
+    y: np.ndarray,
+    sr: int,
+    n_fft: int = 2048,
+    hop_length: int = 512,
+    n_mels: int = 128,
+    fmin: float = 0.0,
+    fmax: float | None = None,
+) -> np.ndarray:
+    mel_spec = librosa.feature.melspectrogram(
+        y=pre_emphasis(y),
+        sr=sr,
+        n_fft=n_fft,
+        hop_length=hop_length,
+        n_mels=n_mels,
+        fmin=fmin,
+        fmax=fmax,
+    )
+    mel_db = librosa.power_to_db(mel_spec, ref=np.max)
+    return normalize_per_segment(mel_db)
+
+
+def compute_cqt(
+    y: np.ndarray,
+    sr: int,
+    *,
+    fmin: float = 8.0,
+    bins_per_octave: int = 24,
+    n_bins: int = 168,
+    hop_length: int = 512,
+) -> dict[str, np.ndarray]:
+    if y.size == 0:
+        return {
+            "cqt": np.zeros((0, 0), dtype=np.complex64),
+            "magnitude_db": np.zeros((0, 0), dtype=np.float32),
+            "frequencies": np.zeros((0,), dtype=np.float32),
+            "times": np.zeros((0,), dtype=np.float32),
+        }
+    max_freq = min(sr / 2.0, fmin * 2 ** (n_bins / bins_per_octave))
+    effective_bins = max(1, min(n_bins, int(np.floor(bins_per_octave * np.log2(max_freq / fmin)))))
+    cqt = librosa.cqt(
+        pre_emphasis(y),
+        sr=sr,
+        hop_length=hop_length,
+        fmin=fmin,
+        n_bins=effective_bins,
+        bins_per_octave=bins_per_octave,
+    )
+    magnitude = np.abs(cqt)
+    magnitude_db = librosa.amplitude_to_db(magnitude, ref=np.max)
+    frequencies = librosa.cqt_frequencies(effective_bins, fmin=fmin, bins_per_octave=bins_per_octave)
+    times = librosa.frames_to_time(np.arange(cqt.shape[1]), sr=sr, hop_length=hop_length)
+    return {
+        "cqt": cqt.astype(np.complex64),
+        "magnitude_db": magnitude_db.astype(np.float32),
+        "frequencies": frequencies.astype(np.float32),
+        "times": times.astype(np.float32),
+    }
+
+
+SUPPORTED_COLORMAPS: frozenset[str] = frozenset({"viridis", "magma", "inferno", "plasma", "gray"})
+
+
+def _validate_cmap(cmap: str) -> str:
+    if cmap not in SUPPORTED_COLORMAPS:
+        raise ValueError(
+            f"Unsupported colormap '{cmap}'. Supported: {sorted(SUPPORTED_COLORMAPS)}"
+        )
+    return cmap
+
+
+def generate_spectrogram_png(
+    magnitude_db: np.ndarray,
+    sr: int,
+    hop_length: int,
+    output_path: str | Path,
+    *,
+    title: str = "Spectrogram",
+    freq_max: float = 1000.0,
+    size: tuple[int, int] = (600, 400),
+    cmap: str = "viridis",
+) -> str:
+    _validate_cmap(cmap)
+    output = Path(output_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    dpi = 100
+    fig, ax = plt.subplots(figsize=(size[0] / dpi, size[1] / dpi), dpi=dpi)
+    librosa.display.specshow(
+        magnitude_db,
+        sr=sr,
+        hop_length=hop_length,
+        x_axis="time",
+        y_axis="hz",
+        cmap=cmap,
+        ax=ax,
+    )
+    ax.set_ylim(0, freq_max)
+    ax.set_title(title, fontsize=11, pad=6)
+    ax.set_xlabel("Time (s)", fontsize=9)
+    ax.set_ylabel("Frequency (Hz)", fontsize=9)
+    # Limit x-axis ticks so labels never overlap on short recordings
+    ax.xaxis.set_major_locator(matplotlib.ticker.MaxNLocator(nbins=6, prune="both"))
+    ax.tick_params(axis="x", labelsize=8)
+    ax.tick_params(axis="y", labelsize=8)
+    fig.tight_layout(pad=0.5)
+    fig.savefig(output, dpi=dpi, bbox_inches="tight")
+    plt.close(fig)
+    return str(output)
+
+
+def generate_comparison_png(
+    mag_before: np.ndarray,
+    mag_after: np.ndarray,
+    sr: int,
+    hop_length: int,
+    output_path: str | Path,
+    *,
+    freq_max: float = 1000.0,
+    cmap: str = "viridis",
+) -> str:
+    _validate_cmap(cmap)
+    output = Path(output_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4), dpi=120)
+    for axis, data, title in (
+        (axes[0], mag_before, "Before"),
+        (axes[1], mag_after, "After"),
+    ):
+        librosa.display.specshow(
+            data,
+            sr=sr,
+            hop_length=hop_length,
+            x_axis="time",
+            y_axis="hz",
+            cmap=cmap,
+            ax=axis,
+        )
+        axis.set_ylim(0, freq_max)
+        axis.set_title(title)
+        axis.xaxis.set_major_locator(matplotlib.ticker.MaxNLocator(nbins=6, prune="both"))
+        axis.tick_params(axis="x", labelsize=8)
+        axis.tick_params(axis="y", labelsize=8)
+    fig.tight_layout()
+    fig.savefig(output)
+    plt.close(fig)
+    return str(output)
+
+
+def build_spectrogram_artifacts(
+    recording_id: str,
+    y: np.ndarray,
+    sr: int,
+    output_dir: str | Path,
+    *,
+    n_fft: int = 2048,
+    hop_length: int = 512,
+    n_mels: int = 128,
+    freq_max: float = 1000.0,
+    spectrogram_type: str = "stft",
+    cmap: str = "viridis",
+    progress_callback: Callable[[str, int], None] | None = None,
+) -> tuple[Spectrogram, SpectrogramViz]:
+    _validate_cmap(cmap)
+    output_root = Path(output_dir)
+    output_root.mkdir(parents=True, exist_ok=True)
+    npy_path = output_root / f"{recording_id}_spectrogram.npy"
+    png_path = output_root / f"{recording_id}_spectrogram.png"
+
+    if progress_callback:
+        progress_callback("SPECTROGRAM_PROGRESS", 50)
+
+    if npy_path.exists() and png_path.exists():
+        cached = np.load(npy_path, allow_pickle=True).item()
+        spectrogram = Spectrogram(
+            recording_id=recording_id,
+            stft=cached["stft"],
+            magnitude_db=cached["magnitude_db"],
+            mel_spectrogram=cached["mel_spectrogram"],
+            frequencies_hz=cached["frequencies_hz"],
+            times_s=cached["times_s"],
+            npy_path=str(npy_path),
+        )
+        viz = SpectrogramViz(
+            recording_id=recording_id,
+            url=str(png_path),
+            width=256,
+            height=256,
+            freq_max_hz=freq_max,
+        )
+        if progress_callback:
+            progress_callback("SPECTROGRAM_READY", 100)
+        return spectrogram, viz
+
+    normalized_type = spectrogram_type.lower()
+    if normalized_type == "cqt":
+        stft_data = compute_cqt(y, sr, hop_length=hop_length)
+        stft_matrix = stft_data["cqt"]
+    else:
+        stft_data = compute_stft(y, sr, n_fft=n_fft, hop_length=hop_length)
+        stft_matrix = stft_data["stft"]
+    mel = compute_mel_spectrogram(
+        y,
+        sr,
+        n_fft=n_fft,
+        hop_length=hop_length,
+        n_mels=n_mels,
+        fmax=float(sr // 2),
+    )
+
+    # Skip saving raw .npy (can be 800 MB+ per file for long recordings).
+    # The PNG visualization and in-memory data are sufficient.
+    # np.save(
+    #     npy_path,
+    #     {
+    #         "stft": stft_matrix,
+    #         "magnitude_db": stft_data["magnitude_db"],
+    #         "mel_spectrogram": mel,
+    #         "frequencies_hz": stft_data["frequencies"],
+    #         "times_s": stft_data["times"],
+    #         "spectrogram_type": normalized_type,
+    #     },
+    #     allow_pickle=True,
+    # )
+    generate_spectrogram_png(
+        stft_data["magnitude_db"],
+        sr,
+        hop_length,
+        png_path,
+        title="Spectrogram",
+        freq_max=freq_max,
+        cmap=cmap,
+    )
+
+    spectrogram = Spectrogram(
+        recording_id=recording_id,
+        stft=stft_matrix,
+        magnitude_db=stft_data["magnitude_db"],
+        mel_spectrogram=mel,
+        frequencies_hz=stft_data["frequencies"],
+        times_s=stft_data["times"],
+        npy_path=str(npy_path),
+    )
+    viz = SpectrogramViz(
+        recording_id=recording_id,
+        url=str(png_path),
+        width=256,
+        height=256,
+        freq_max_hz=freq_max,
+    )
+    if progress_callback:
+        progress_callback("SPECTROGRAM_READY", 100)
+    return spectrogram, viz
+
+
+def build_cqt_artifacts(
+    recording_id: str,
+    y: np.ndarray,
+    sr: int,
+    output_dir: str | Path,
+    *,
+    hop_length: int = 512,
+    freq_max: float = 1000.0,
+    progress_callback: Callable[[str, int], None] | None = None,
+) -> tuple[Spectrogram, SpectrogramViz]:
+    return build_spectrogram_artifacts(
+        recording_id,
+        y,
+        sr,
+        output_dir,
+        hop_length=hop_length,
+        freq_max=freq_max,
+        spectrogram_type="cqt",
+        progress_callback=progress_callback,
+    )

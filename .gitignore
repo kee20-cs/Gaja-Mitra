@@ -1,0 +1,77 @@
+# Environment & Secrets
+.env
+.env.local
+.env.*.local
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+*.egg
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+venv/
+ENV/
+env/
+.venv
+
+# Node & Frontend
+node_modules/
+.next/
+out/
+.cache/
+.vercel/
+*.tsbuildinfo
+npm-debug.log
+yarn-error.log
+.DS_Store
+*.pem
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Audio Processing
+*.wav.tmp
+*.cache
+.librosa_cache/
+
+# Model Weights (binary files ignored; docs committed)
+*.pt
+*.pth
+models/
+!models/README.md
+!models/*/model_card.md
+
+# Data — runtime cache, processed output, spectrograms
+data/cache/*.png
+data/cache/*.wav
+data/cache/*.sqlite
+data/cache/index.json
+data/cache/review_labels.json
+data/processed/
+data/spectrograms/
+*.log
+
+# Claude Code local skill/agent definitions (auto-generated, not project code)
+.claude/skills/
+.claude/agents/
+.impeccable.md
+
+# Docker
+.docker/
+
+# Jupyter
+.ipynb_checkpoints
+*.ipynb
