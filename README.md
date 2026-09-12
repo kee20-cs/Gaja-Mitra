@@ -1,3 +1,14 @@
+## Model Attribution
+
+The model used in this project was not built or trained from scratch by our team. 
+We used an existing model as part of our hackathon project and integrated it 
+into our overall solution.
+
+The original model and its underlying work belong to their respective authors. 
+Our work focuses on integrating the model and building the application and 
+features around it for the Gaja Mitra hackathon project.
+
+
 # EchoField
 
 Elephant vocalization noise-removal and research platform. Built for HackSMU 2026 in partnership with [ElephantVoices](https://www.elephantvoices.org/).
